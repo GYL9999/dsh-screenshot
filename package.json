@@ -1,0 +1,47 @@
+{
+  "name": "@gyl9999/dsh-screenshot",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "DeepSeek Harness 截图插件：在输入框旁点一下就冻结屏幕，拖拽框选、悬停截窗口、Enter 复制；截图可存本机并把路径插进对话。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "screenshot",
+    "capture",
+    "windows"
+  ],
+  "author": "GYL9999",
+  "license": "MIT",
+  "homepage": "https://github.com/GYL9999/dsh-screenshot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GYL9999/dsh-screenshot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GYL9999/dsh-screenshot/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
