@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
       'dialog.sub.browser': '浏览器共享的画面 · {w} × {h}',
       'dialog.sub.region': '选区 · {w} × {h}',
       'dialog.sub.window': '窗口 · {w} × {h}',
-      'dialog.hint': '在画面上拖动即可框选 · Enter 复制 · Esc 关闭',
+      'dialog.hint': '拖动画框 · 点击空白取消 · Enter 复制 · Esc 关闭',
       'dialog.hint.noShot': '拖不动就等截图出来',
       'dialog.capturing': '截取中…',
       'dialog.copy': '复制',
@@ -82,7 +82,7 @@ window.__ModuleLoader__.load({
       'dialog.sub.browser': 'Browser-shared surface · {w} × {h}',
       'dialog.sub.region': 'Selection · {w} × {h}',
       'dialog.sub.window': 'Window · {w} × {h}',
-      'dialog.hint': 'Drag to select · Enter copies · Esc closes',
+      'dialog.hint': 'Drag to select · click empty space to cancel · Enter copies · Esc closes',
       'dialog.hint.noShot': 'Wait for the capture to land',
       'dialog.capturing': 'Capturing…',
       'dialog.copy': 'Copy',
@@ -742,6 +742,15 @@ window.__ModuleLoader__.load({
           const current = dragStart.current
           const next = pointInFrame(moveEvent)
           if (current === null || next === null) return
+          if (!current.moved) {
+            const node = frame.current
+            if (node !== null) {
+              const rect = node.getBoundingClientRect()
+              const dx = Math.abs(next.x - current.startX) * rect.width
+              const dy = Math.abs(next.y - current.startY) * rect.height
+              if (dx > 4 || dy > 4) current.moved = true
+            }
+          }
           setSelection(selectionFromDrag(current, next))
         }
         const onUp = () => {
@@ -749,7 +758,13 @@ window.__ModuleLoader__.load({
           dragStart.current = null
           window.removeEventListener('mousemove', onMove)
           window.removeEventListener('mouseup', onUp)
-          // A click that never really dragged clears instead of leaving a speck.
+          // A plain left click is the cancel gesture: no box, no chasing the ✕.
+          if (current !== null && current.kind === 'new' && !current.moved) {
+            setSelection(null)
+            close()
+            return
+          }
+          // A drag too small to be deliberate leaves no speck behind.
           if (current !== null && current.kind === 'new') {
             setSelection((value) => {
               if (value === null) return null
@@ -1112,7 +1127,18 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'fs-overlay' },
-          h('div', { className: 'fs-canvas', ref: stageRef }, stage),
+          h('div', {
+            className: 'fs-canvas',
+            ref: stageRef,
+            // Clicking the empty backdrop is the other way out. It runs on
+            // mouseup so the press never leaks to whatever sits underneath.
+            onMouseUp: (event) => {
+              if (typeof event.button === 'number' && event.button !== 0) return
+              if (event.target !== event.currentTarget) return
+              event.preventDefault()
+              close()
+            },
+          }, stage),
           h(
             'div',
             { className: 'fs-top' },
