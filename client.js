@@ -324,6 +324,9 @@ window.__ModuleLoader__.load({
       'transition:background .12s ease}',
       '.fs-marquee{position:absolute;pointer-events:none;border:1.5px solid #fff;',
       'box-shadow:0 0 0 9999px rgba(7,9,13,.5),0 0 0 1px rgba(7,9,13,.5)}',
+      '.fs-handle{position:absolute;width:9px;height:9px;margin:-5px 0 0 -5px;border-radius:2px;',
+      'background:#fff;border:1px solid rgba(7,9,13,.65);box-shadow:0 1px 2px rgba(0,0,0,.35);',
+      'pointer-events:none}',
       '.fs-snap{position:absolute;pointer-events:none;border:2px solid var(--dsw-alias-brand-primary);',
       'border-radius:2px;background:rgba(64,132,255,.08);box-shadow:0 0 0 9999px rgba(7,9,13,.45)}',
       '.fs-top{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;',
@@ -476,6 +479,7 @@ window.__ModuleLoader__.load({
       const [selection, setSelection] = React.useState(null)
       const [picked, setPicked] = React.useState(null)
       const [hoverId, setHoverId] = React.useState('')
+      const [cursor, setCursor] = React.useState('crosshair')
       const sequence = React.useRef(0)
       const alive = React.useRef(true)
       const objectUrl = React.useRef('')
@@ -628,32 +632,144 @@ window.__ModuleLoader__.load({
         return null
       }
 
-      /** Drag out a rectangle (or pick a window) straight on the frozen picture. */
+      /** Selection as left/top/width/height fractions, whatever corner it came from. */
+      const normalizeSelection = (value) => (value === null
+        ? null
+        : {
+          left: Math.min(value.x0, value.x1),
+          top: Math.min(value.y0, value.y1),
+          width: Math.abs(value.x1 - value.x0),
+          height: Math.abs(value.y1 - value.y0),
+        })
+
+      /** Smallest selection worth keeping, as a fraction of the picture (about 4 px). */
+      const MIN_SELECTION = 0.004
+      /** Pointer distance, in CSS px, that still counts as grabbing a handle. */
+      const HANDLE_REACH = 10
+      const HANDLE_CURSORS = {
+        nw: 'nwse-resize',
+        se: 'nwse-resize',
+        ne: 'nesw-resize',
+        sw: 'nesw-resize',
+        n: 'ns-resize',
+        s: 'ns-resize',
+        w: 'ew-resize',
+        e: 'ew-resize',
+      }
+      const HANDLE_SPOTS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
+
+      /** Which resize handle (if any) sits under the pointer. */
+      const handleUnderPointer = (event, value) => {
+        const node = frame.current
+        if (node === null || value === null) return null
+        const rect = node.getBoundingClientRect()
+        if (rect.width === 0 || rect.height === 0) return null
+        const x = event.clientX - rect.left
+        const y = event.clientY - rect.top
+        const box = normalizeSelection(value)
+        const left = box.left * rect.width
+        const top = box.top * rect.height
+        const right = (box.left + box.width) * rect.width
+        const bottom = (box.top + box.height) * rect.height
+        if (x < left - HANDLE_REACH || x > right + HANDLE_REACH) return null
+        if (y < top - HANDLE_REACH || y > bottom + HANDLE_REACH) return null
+        const horizontal = Math.abs(x - left) <= HANDLE_REACH
+          ? 'w'
+          : Math.abs(x - right) <= HANDLE_REACH ? 'e' : ''
+        const vertical = Math.abs(y - top) <= HANDLE_REACH
+          ? 'n'
+          : Math.abs(y - bottom) <= HANDLE_REACH ? 's' : ''
+        if (horizontal !== '' && vertical !== '') return vertical + horizontal
+        if (horizontal !== '') return horizontal
+        return vertical !== '' ? vertical : null
+      }
+
+      /** True when the pointer is inside the selection, so a drag moves it. */
+      const insideSelection = (event, value) => {
+        const point = pointInFrame(event)
+        const box = normalizeSelection(value)
+        if (point === null || box === null) return false
+        return point.x > box.left && point.x < box.left + box.width
+          && point.y > box.top && point.y < box.top + box.height
+      }
+
+      /** Next selection from one drag state and the current pointer. */
+      const selectionFromDrag = (drag, next) => {
+        if (drag.kind === 'new') return { x0: drag.startX, y0: drag.startY, x1: next.x, y1: next.y }
+        const box = drag.origin
+        if (drag.kind === 'move') {
+          const left = Math.min(Math.max(0, box.left + (next.x - drag.startX)), 1 - box.width)
+          const top = Math.min(Math.max(0, box.top + (next.y - drag.startY)), 1 - box.height)
+          return { x0: left, y0: top, x1: left + box.width, y1: top + box.height }
+        }
+        let left = box.left
+        let top = box.top
+        let right = box.left + box.width
+        let bottom = box.top + box.height
+        if (drag.handle.includes('w')) left = Math.min(next.x, right - MIN_SELECTION)
+        if (drag.handle.includes('e')) right = Math.max(next.x, left + MIN_SELECTION)
+        if (drag.handle.includes('n')) top = Math.min(next.y, bottom - MIN_SELECTION)
+        if (drag.handle.includes('s')) bottom = Math.max(next.y, top + MIN_SELECTION)
+        return {
+          x0: Math.max(0, left),
+          y0: Math.max(0, top),
+          x1: Math.min(1, right),
+          y1: Math.min(1, bottom),
+        }
+      }
+
+      /** One mousedown: draw a new box, move the box, or pull one of its handles. */
       const beginSelection = (event) => {
         if (mode === 'pick') {
           const win = windowAt(screenPointOf(pointInFrame(event)))
           if (win !== null) void capturePickedWindow(win)
           return
         }
-        if (mode !== 'preview' && mode !== 'draw') return
         if (phase !== 'ready') return
-        const start = pointInFrame(event)
-        if (start === null) return
+        if (typeof event.button === 'number' && event.button !== 0) return
+        const point = pointInFrame(event)
+        if (point === null) return
         event.preventDefault()
-        dragStart.current = start
-        setSelection({ x0: start.x, y0: start.y, x1: start.x, y1: start.y })
+        const handle = handleUnderPointer(event, selection)
+        const drag = handle !== null
+          ? { kind: 'resize', handle, startX: point.x, startY: point.y, origin: normalizeSelection(selection) }
+          : insideSelection(event, selection)
+            ? { kind: 'move', handle: '', startX: point.x, startY: point.y, origin: normalizeSelection(selection) }
+            : { kind: 'new', handle: '', startX: point.x, startY: point.y, origin: null }
+        dragStart.current = drag
+        if (drag.kind === 'new') setSelection({ x0: point.x, y0: point.y, x1: point.x, y1: point.y })
         const onMove = (moveEvent) => {
+          const current = dragStart.current
           const next = pointInFrame(moveEvent)
-          if (next === null || dragStart.current === null) return
-          setSelection({ x0: dragStart.current.x, y0: dragStart.current.y, x1: next.x, y1: next.y })
+          if (current === null || next === null) return
+          setSelection(selectionFromDrag(current, next))
         }
         const onUp = () => {
+          const current = dragStart.current
           dragStart.current = null
           window.removeEventListener('mousemove', onMove)
           window.removeEventListener('mouseup', onUp)
+          // A click that never really dragged clears instead of leaving a speck.
+          if (current !== null && current.kind === 'new') {
+            setSelection((value) => {
+              if (value === null) return null
+              const box = normalizeSelection(value)
+              return box.width < 0.006 || box.height < 0.006 ? null : value
+            })
+          }
         }
         window.addEventListener('mousemove', onMove)
         window.addEventListener('mouseup', onUp)
+      }
+
+      /** Pointer feedback: resize arrows on a handle, a move cursor inside the box. */
+      const trackCursor = (event) => {
+        if (mode !== 'preview' || phase !== 'ready') return
+        const handle = handleUnderPointer(event, selection)
+        const next = handle !== null
+          ? HANDLE_CURSORS[handle]
+          : (selection !== null && insideSelection(event, selection) ? 'move' : 'crosshair')
+        if (next !== cursor) setCursor(next)
       }
 
       /** Track which window a pointer is over while picking. */
@@ -914,17 +1030,44 @@ window.__ModuleLoader__.load({
             top: Math.min(selection.y0, selection.y1) * 100 + '%',
             transform: 'translateY(calc(-100% - 6px))',
           }
+        const handles = selection === null || box === null
+          ? null
+          : (() => {
+            const area = normalizeSelection(selection)
+            const spots = [
+              ['nw', area.left, area.top],
+              ['n', area.left + area.width / 2, area.top],
+              ['ne', area.left + area.width, area.top],
+              ['e', area.left + area.width, area.top + area.height / 2],
+              ['se', area.left + area.width, area.top + area.height],
+              ['s', area.left + area.width / 2, area.top + area.height],
+              ['sw', area.left, area.top + area.height],
+              ['w', area.left, area.top + area.height / 2],
+            ]
+            return spots.map(([key, left, top]) => h('div', {
+              key,
+              className: 'fs-handle',
+              style: { left: left * 100 + '%', top: top * 100 + '%' },
+            }))
+          })()
         stage = h(
           'div',
           {
             className: 'fs-frame',
             ref: frame,
             'data-mode': mode === 'pick' ? 'pick' : 'draw',
-            style: box === null ? { maxWidth: '100%', maxHeight: '100%' } : { width: box.width + 'px', height: box.height + 'px' },
+            style: Object.assign(
+              box === null ? { maxWidth: '100%', maxHeight: '100%' } : { width: box.width + 'px', height: box.height + 'px' },
+              mode === 'pick' ? null : { cursor },
+            ),
             onMouseDown: beginSelection,
-            onMouseMove: trackHover,
+            onMouseMove: (event) => {
+              trackHover(event)
+              trackCursor(event)
+            },
             onMouseLeave: () => {
               if (hoverId !== '') setHoverId('')
+              if (cursor !== 'crosshair') setCursor('crosshair')
             },
           },
           h('img', {
@@ -938,6 +1081,7 @@ window.__ModuleLoader__.load({
           }),
           marquee === null && snap === null ? h('div', { className: 'fs-dim' }) : null,
           marquee === null ? null : h('div', { className: 'fs-marquee', style: marquee }),
+          handles,
           snap === null ? null : h('div', { className: 'fs-snap', style: snap }),
           sizeTag === null
             ? null
